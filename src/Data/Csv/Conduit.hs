@@ -16,11 +16,17 @@ module Data.Csv.Conduit (
     ,   CsvStreamRecordParseError(..)
     -- * Conduits
     ,   fromCsv
+    ,   fromCsv'
     ,   fromCsvLiftError
+    ,   fromCsvLiftError'
     ,   fromNamedCsv
+    ,   fromNamedCsv'
     ,   fromNamedCsvLiftError
+    ,   fromNamedCsvLiftError'
     ,   fromCsvStreamError
+    ,   fromCsvStreamError'
     ,   fromNamedCsvStreamError
+    ,   fromNamedCsvStreamError'
     ,   toCsv
     ) where
 
@@ -33,8 +39,9 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import Data.Conduit ( Conduit, await, yield )
 import Data.Conduit.List ( map, mapM )
-import Data.Csv ( FromNamedRecord, FromRecord, ToRecord, DecodeOptions, EncodeOptions, HasHeader, encodeWith )
-import Data.Csv.Incremental ( HeaderParser(..), Parser(..), decodeByNameWith, decodeWith )
+import Data.Csv ( NamedRecord, FromNamedRecord(..), Record, FromRecord(..), ToRecord, DecodeOptions, EncodeOptions, HasHeader, encodeWith )
+import qualified Data.Csv.Conversion as Conversion ( Parser )
+import Data.Csv.Incremental ( HeaderParser(..), Parser(..), decodeByNameWith', decodeWith' )
 import Data.Foldable ( mapM_ )
 import qualified Data.Text as T
 
@@ -64,12 +71,22 @@ data CsvStreamRecordParseError =
 fromCsv :: (FromRecord a, MonadError CsvParseError m) => DecodeOptions -> HasHeader -> Conduit BS.ByteString m a
 fromCsv = fromCsvLiftError id
 
+fromCsv' :: MonadError CsvParseError m => (Record -> Conversion.Parser a) -> DecodeOptions -> HasHeader -> Conduit BS.ByteString m a
+fromCsv' p = fromCsvLiftError' p id
+
 -- |
 -- Sometimes your pipeline will involve an error type other than `CsvParseError`, in which case if you provide
 -- a function to project it into your custom error type, you can use this instead of `fromCsv`
 --
 fromCsvLiftError :: (FromRecord a, MonadError e m) => (CsvParseError -> e) -> DecodeOptions -> HasHeader -> Conduit BS.ByteString m a
-fromCsvLiftError f opts h = {-# SCC fromCsvLiftError_p #-} terminatingStreamParser f $ decodeWith opts h
+fromCsvLiftError = fromCsvLiftError' parseRecord
+
+-- |
+-- Full-fledged function with custom parser, error lifting and parsing options
+-- a function to project it into your custom error type, you can use this instead of `fromCsv`
+--
+fromCsvLiftError' :: MonadError e m => (Record -> Conversion.Parser a) -> (CsvParseError -> e) -> DecodeOptions -> HasHeader -> Conduit BS.ByteString m a
+fromCsvLiftError' p f opts h = {-# SCC fromCsvLiftError_p #-} terminatingStreamParser f $ decodeWith' p opts h
 
 
 -- |
@@ -81,24 +98,37 @@ fromCsvLiftError f opts h = {-# SCC fromCsvLiftError_p #-} terminatingStreamPars
 fromNamedCsv :: (FromNamedRecord a, MonadError CsvParseError m) => DecodeOptions -> Conduit BS.ByteString m a
 fromNamedCsv = fromNamedCsvLiftError id
 
+fromNamedCsv' :: MonadError CsvParseError m => (NamedRecord -> Conversion.Parser a) -> DecodeOptions -> Conduit BS.ByteString m a
+fromNamedCsv' p = fromNamedCsvLiftError' p id
+
 -- |
 -- Sometimes your pipeline will involve an error type other than `CsvParseError`, in which case if you provide
 -- a function to project it into your custom error type, you can use this instead of `fromCsv`
 --
 fromNamedCsvLiftError :: (FromNamedRecord a, MonadError e m) => (CsvParseError -> e) -> DecodeOptions -> Conduit BS.ByteString m a
-fromNamedCsvLiftError f opts = {-# SCC fromNamedCsv_p #-} terminatingStreamHeaderParser f $ decodeByNameWith opts
+fromNamedCsvLiftError = fromNamedCsvLiftError' parseNamedRecord
+
+fromNamedCsvLiftError' :: MonadError e m => (NamedRecord -> Conversion.Parser a) -> (CsvParseError -> e) -> DecodeOptions -> Conduit BS.ByteString m a
+fromNamedCsvLiftError' p f opts = {-# SCC fromNamedCsv_p #-} terminatingStreamHeaderParser f $ decodeByNameWith' p opts
 
 -- |
 -- Same as `fromCsv` but allows for errors to be handled in the pipeline instead
 --
 fromCsvStreamError :: (FromRecord a, MonadError e m) => DecodeOptions -> HasHeader -> (CsvStreamHaltParseError -> e) -> Conduit BS.ByteString m (Either CsvStreamRecordParseError a)
-fromCsvStreamError opts h f = {-# SCC fromCsvStreamError_p #-} streamParser f $ decodeWith opts h
+fromCsvStreamError = fromCsvStreamError' parseRecord
+
+fromCsvStreamError' :: MonadError e m => (Record -> Conversion.Parser a) -> DecodeOptions -> HasHeader -> (CsvStreamHaltParseError -> e) -> Conduit BS.ByteString m (Either CsvStreamRecordParseError a)
+fromCsvStreamError' p opts h f = {-# SCC fromCsvStreamError_p #-} streamParser f $ decodeWith' p opts h
 
 -- |
 -- Like `fromNamedCsvStream` but allows for errors to be handled in the pipeline itself.
 --
 fromNamedCsvStreamError :: (FromNamedRecord a, MonadError e m) => DecodeOptions -> (CsvStreamHaltParseError -> e) -> Conduit BS.ByteString m (Either CsvStreamRecordParseError a)
-fromNamedCsvStreamError opts f = {-# SCC fromCsvStreamError_p #-} streamHeaderParser f $ decodeByNameWith opts
+fromNamedCsvStreamError = fromNamedCsvStreamError' parseNamedRecord
+
+
+fromNamedCsvStreamError' :: MonadError e m => (NamedRecord -> Conversion.Parser a) -> DecodeOptions -> (CsvStreamHaltParseError -> e) -> Conduit BS.ByteString m (Either CsvStreamRecordParseError a)
+fromNamedCsvStreamError' p opts f = {-# SCC fromCsvStreamError_p #-} streamHeaderParser f $ decodeByNameWith' p opts
 
 -- |
 -- Streams from csv to text, does not create headers...
